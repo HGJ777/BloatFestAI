@@ -23,7 +23,11 @@ const groq = new Groq({
    Health Check
 ========================= */
 app.get('/', (req, res) => {
-    res.send('BloatFest backend running');
+    res.send('BloatFest backend is running');
+});
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
 });
 
 /* =========================
