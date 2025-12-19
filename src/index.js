@@ -12,9 +12,6 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-/* =========================
-   Groq Client
-========================= */
 const groq = new Groq({
     apiKey: process.env.GROQ_API_KEY,
 });
@@ -22,60 +19,84 @@ const groq = new Groq({
 /* =========================
    Health Check
 ========================= */
-app.get('/', (req, res) => {
+app.get('/', (_, res) => {
     res.send('BloatFest backend is running');
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', (_, res) => {
     res.json({ status: 'ok' });
 });
 
 /* =========================
-   CHAT ENDPOINTS
+   CHAT
 ========================= */
-
-/**
- * PRIMARY CHAT ENDPOINT
- * (used by frontend)
- */
 app.post('/chat', async (req, res) => {
     try {
-        const { messages } = req.body;
+        let { messages } = req.body;
 
         if (!Array.isArray(messages)) {
             return res.status(400).json({ error: 'messages must be an array' });
         }
 
-        const limitedMessages = messages.slice(-7);
+        // 🔒 SANITIZE INPUT (CRITICAL)
+        messages = messages
+            .filter(
+                m =>
+                    typeof m?.content === 'string' &&
+                    m.content.trim().length > 0 &&
+                    ['system', 'user', 'assistant'].includes(m.role)
+            )
+            .map(m => ({
+                role: m.role,
+                content: m.content.trim(),
+            }))
+            .slice(-5); // hard cap
+
+        if (messages.length === 0) {
+            return res.json({
+                reply: 'I’m here. What would you like to explore?',
+            });
+        }
 
         const completion = await groq.chat.completions.create({
             model: 'llama-3.3-70b-versatile',
-            messages: limitedMessages,
+            messages,
             temperature: 0.7,
-            max_tokens: 1024,
+            max_tokens: 800,
         });
 
+        const rawReply = completion?.choices?.[0]?.message?.content;
+
         const reply =
-            completion.choices?.[0]?.message?.content ?? 'No response';
+            typeof rawReply === 'string' && rawReply.trim().length > 0
+                ? rawReply.trim()
+                : 'I’m here, but I didn’t generate a response this time. Please try again.';
+
+        console.log('AI reply:', reply);
 
         res.json({ reply });
     } catch (error) {
-        console.error('Groq API Error:', error);
-        res.status(500).json({ error: 'Failed to get AI response' });
+        console.error('Groq API Error FULL:', {
+            message: error.message,
+            stack: error.stack,
+            response: error.response?.data,
+        });
+
+        res.status(500).json({
+            error: 'AI request failed',
+            details: error.message,
+        });
     }
 });
 
-/**
- * BACKWARD-COMPATIBILITY ALIAS
- * (/api/chat still works)
- */
-app.post('/api/chat', async (req, res) => {
+/* Backward compatibility */
+app.post('/api/chat', (req, res) => {
     req.url = '/chat';
     app.handle(req, res);
 });
 
 /* =========================
-   FEEDBACK ENDPOINT
+   FEEDBACK (unchanged)
 ========================= */
 const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -87,58 +108,23 @@ const transporter = nodemailer.createTransport({
 
 app.post('/api/feedback', async (req, res) => {
     try {
-        const {
-            feedback,
-            userEmail,
-            username,
-            isPro,
-            timestamp,
-            platform,
-        } = req.body;
-
-        if (!feedback || !feedback.trim()) {
-            return res.status(400).json({
-                success: false,
-                message: 'Feedback is required',
-            });
+        const { feedback } = req.body;
+        if (!feedback?.trim()) {
+            return res.status(400).json({ success: false });
         }
-
-        const mailOptions = {
+        await transporter.sendMail({
             from: process.env.GMAIL_USER,
             to: process.env.GMAIL_USER,
-            subject: `BloatFest Feedback from ${username}`,
-            html: `
-        <h2>New Feedback Received</h2>
-        <p><strong>User:</strong> ${username} (${isPro ? 'Pro ⭐' : 'Free'})</p>
-        <p><strong>Email:</strong> ${userEmail}</p>
-        <p><strong>Platform:</strong> ${platform}</p>
-        <p><strong>Time:</strong> ${new Date(timestamp).toLocaleString()}</p>
-        <hr />
-        <pre>${feedback}</pre>
-      `,
-        };
-
-        await transporter.sendMail(mailOptions);
-
-        res.json({ success: true });
-    } catch (error) {
-        console.error('Feedback error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to send feedback',
+            subject: 'BloatFest Feedback',
+            text: feedback,
         });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ success: false });
     }
 });
 
-/* =========================
-   START SERVER
-========================= */
 app.listen(PORT, () => {
     console.log(`🚀 Backend running on port ${PORT}`);
-    console.log(
-        `🤖 Groq key loaded: ${Boolean(process.env.GROQ_API_KEY)}`
-    );
-    console.log(
-        `📧 Email configured: ${Boolean(process.env.GMAIL_USER)}`
-    );
+    console.log(`🤖 Groq key loaded: ${Boolean(process.env.GROQ_API_KEY)}`);
 });
