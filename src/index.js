@@ -12,35 +12,47 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+/* =========================
+   Groq Client
+========================= */
 const groq = new Groq({
     apiKey: process.env.GROQ_API_KEY,
 });
 
-// Email configuration
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,
-    },
+/* =========================
+   Health Check
+========================= */
+app.get('/', (req, res) => {
+    res.send('BloatFest backend running');
 });
 
-// Chat endpoint (existing)
-app.post('/api/chat', async (req, res) => {
+/* =========================
+   CHAT ENDPOINTS
+========================= */
+
+/**
+ * PRIMARY CHAT ENDPOINT
+ * (used by frontend)
+ */
+app.post('/chat', async (req, res) => {
     try {
         const { messages } = req.body;
 
-        // Take last 7 messages only
+        if (!Array.isArray(messages)) {
+            return res.status(400).json({ error: 'messages must be an array' });
+        }
+
         const limitedMessages = messages.slice(-7);
 
         const completion = await groq.chat.completions.create({
-            messages: limitedMessages,
             model: 'llama-3.3-70b-versatile',
+            messages: limitedMessages,
             temperature: 0.7,
             max_tokens: 1024,
         });
 
-        const reply = completion.choices[0]?.message?.content || 'No response';
+        const reply =
+            completion.choices?.[0]?.message?.content ?? 'No response';
 
         res.json({ reply });
     } catch (error) {
@@ -49,16 +61,41 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
-// Feedback endpoint (NEW)
+/**
+ * BACKWARD-COMPATIBILITY ALIAS
+ * (/api/chat still works)
+ */
+app.post('/api/chat', async (req, res) => {
+    req.url = '/chat';
+    app.handle(req, res);
+});
+
+/* =========================
+   FEEDBACK ENDPOINT
+========================= */
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD,
+    },
+});
+
 app.post('/api/feedback', async (req, res) => {
     try {
-        const { feedback, userEmail, username, isPro, timestamp, platform } = req.body;
+        const {
+            feedback,
+            userEmail,
+            username,
+            isPro,
+            timestamp,
+            platform,
+        } = req.body;
 
-        // Validate feedback
-        if (!feedback || feedback.trim().length === 0) {
+        if (!feedback || !feedback.trim()) {
             return res.status(400).json({
                 success: false,
-                message: 'Feedback is required'
+                message: 'Feedback is required',
             });
         }
 
@@ -67,32 +104,37 @@ app.post('/api/feedback', async (req, res) => {
             to: process.env.GMAIL_USER,
             subject: `BloatFest Feedback from ${username}`,
             html: `
-                <h2>New Feedback Received</h2>
-                <p><strong>From:</strong> ${username} (${isPro ? 'Pro User ⭐' : 'Free User'})</p>
-                <p><strong>Contact Email:</strong> ${userEmail}</p>
-                <p><strong>Platform:</strong> ${platform}</p>
-                <p><strong>Time:</strong> ${new Date(timestamp).toLocaleString()}</p>
-                <hr>
-                <h3>Feedback:</h3>
-                <p style="white-space: pre-wrap;">${feedback}</p>
-            `,
+        <h2>New Feedback Received</h2>
+        <p><strong>User:</strong> ${username} (${isPro ? 'Pro ⭐' : 'Free'})</p>
+        <p><strong>Email:</strong> ${userEmail}</p>
+        <p><strong>Platform:</strong> ${platform}</p>
+        <p><strong>Time:</strong> ${new Date(timestamp).toLocaleString()}</p>
+        <hr />
+        <pre>${feedback}</pre>
+      `,
         };
 
         await transporter.sendMail(mailOptions);
 
-        console.log(`✅ Feedback sent from ${username}`);
-        res.status(200).json({ success: true, message: 'Feedback sent successfully' });
+        res.json({ success: true });
     } catch (error) {
-        console.error('Error sending feedback email:', error);
+        console.error('Feedback error:', error);
         res.status(500).json({
             success: false,
             message: 'Failed to send feedback',
-            error: error.message
         });
     }
 });
 
+/* =========================
+   START SERVER
+========================= */
 app.listen(PORT, () => {
-    console.log(`Backend running on http://localhost:${PORT}`);
-    console.log(`📧 Email configured: ${process.env.GMAIL_USER ? 'Yes' : 'No'}`);
+    console.log(`🚀 Backend running on port ${PORT}`);
+    console.log(
+        `🤖 Groq key loaded: ${Boolean(process.env.GROQ_API_KEY)}`
+    );
+    console.log(
+        `📧 Email configured: ${Boolean(process.env.GMAIL_USER)}`
+    );
 });
